@@ -56,6 +56,7 @@ Build a realtime chat system between a customer mobile app and an admin web app.
 ## Implementation Progress
 - Task 1: scaffold repo, Firebase client bootstrapping, baseline spec.
 - Task 2: customer anonymous auth, customer name entry, create new session on every app entry, realtime text messaging on mobile.
+- Task 3: admin Google sign-in on web, realtime session list, open session, reply with text in realtime.
 
 ### Web
 1. Admin logs in.
