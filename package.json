@@ -7,6 +7,7 @@
   ],
   "scripts": {
     "dev:web": "npm --workspace web run dev",
-    "dev:mobile": "npm --workspace mobile run start"
+    "dev:mobile": "npm --workspace mobile run start",
+    "typecheck": "npm --workspace web exec tsc --noEmit && npm --workspace mobile exec tsc --noEmit"
   }
 }

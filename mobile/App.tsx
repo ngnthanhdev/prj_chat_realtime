@@ -1,10 +1,11 @@
 import { StatusBar } from 'expo-status-bar';
 import * as ImagePicker from 'expo-image-picker';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   FlatList,
   Image,
+  Modal,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -22,11 +23,15 @@ import { ChatMessage } from './types';
 void firebaseApp;
 
 export default function App() {
+  const listRef = useRef<FlatList<ChatMessage>>(null);
   const [customerName, setCustomerName] = useState('');
   const [draft, setDraft] = useState('');
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [loading, setLoading] = useState(false);
+  const [sendingText, setSendingText] = useState(false);
+  const [sendingImage, setSendingImage] = useState(false);
+  const [previewImage, setPreviewImage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
 
@@ -34,6 +39,13 @@ export default function App() {
     if (!sessionId) return;
     return subscribeMessages(sessionId, setMessages);
   }, [sessionId]);
+
+  useEffect(() => {
+    if (!messages.length) return;
+    requestAnimationFrame(() => {
+      listRef.current?.scrollToEnd({ animated: true });
+    });
+  }, [messages]);
 
   const title = useMemo(() => (sessionId ? `Khách hàng: ${customerName}` : 'Bắt đầu cuộc trò chuyện'), [customerName, sessionId]);
 
@@ -62,10 +74,14 @@ export default function App() {
     if (!sessionId || !draft.trim()) return;
 
     try {
+      setSendingText(true);
+      setError(null);
       await sendTextMessage(sessionId, draft);
       setDraft('');
     } catch (err) {
       setError('Không gửi được tin nhắn.');
+    } finally {
+      setSendingText(false);
     }
   };
 
@@ -78,9 +94,23 @@ export default function App() {
       });
 
       if (result.canceled || !result.assets[0]?.uri) return;
-      await sendImageMessage(sessionId, result.assets[0].uri);
+      setPreviewImage(result.assets[0].uri);
+    } catch (err) {
+      setError('Không chọn được ảnh.');
+    }
+  };
+
+  const handleConfirmImage = async () => {
+    if (!sessionId || !previewImage) return;
+    try {
+      setSendingImage(true);
+      setError(null);
+      await sendImageMessage(sessionId, previewImage);
+      setPreviewImage(null);
     } catch (err) {
       setError('Không gửi được ảnh.');
+    } finally {
+      setSendingImage(false);
     }
   };
 
@@ -106,6 +136,7 @@ export default function App() {
           ) : (
             <>
               <FlatList
+                ref={listRef}
                 data={messages}
                 keyExtractor={(item) => item.id}
                 contentContainerStyle={styles.messageList}
@@ -118,7 +149,10 @@ export default function App() {
                   >
                     <Text style={styles.messageSender}>{item.senderType === 'customer' ? customerName : 'Admin'}</Text>
                     {item.messageType === 'image' && item.imageUrl ? (
-                      <Image source={{ uri: item.imageUrl }} style={styles.messageImage} />
+                      <>
+                        <Image source={{ uri: item.imageUrl }} style={styles.messageImage} />
+                        <Text style={styles.messageMeta}>Ảnh</Text>
+                      </>
                     ) : (
                       <Text style={styles.messageText}>{item.text || ''}</Text>
                     )}
@@ -133,14 +167,32 @@ export default function App() {
                   onChangeText={setDraft}
                   placeholder="Nhập tin nhắn"
                   style={[styles.input, styles.composerInput]}
+                  editable={!sendingText && !sendingImage}
                 />
-                <Pressable style={styles.imageButton} onPress={handlePickImage}>
-                  <Text style={styles.primaryButtonText}>Ảnh</Text>
+                <Pressable style={styles.imageButton} onPress={handlePickImage} disabled={sendingText || sendingImage}>
+                  <Text style={styles.primaryButtonText}>{sendingImage ? 'Đang gửi...' : 'Ảnh'}</Text>
                 </Pressable>
-                <Pressable style={styles.sendButton} onPress={handleSendMessage}>
-                  <Text style={styles.primaryButtonText}>Gửi</Text>
+                <Pressable style={styles.sendButton} onPress={handleSendMessage} disabled={sendingText || sendingImage}>
+                  <Text style={styles.primaryButtonText}>{sendingText ? 'Đang gửi...' : 'Gửi'}</Text>
                 </Pressable>
               </View>
+
+              <Modal visible={!!previewImage} transparent animationType="fade">
+                <View style={styles.modalBackdrop}>
+                  <View style={styles.modalCard}>
+                    <Text style={styles.label}>Xem trước ảnh</Text>
+                    {previewImage ? <Image source={{ uri: previewImage }} style={styles.previewImage} /> : null}
+                    <View style={styles.modalActions}>
+                      <Pressable style={styles.secondaryActionButton} onPress={() => setPreviewImage(null)}>
+                        <Text>Hủy</Text>
+                      </Pressable>
+                      <Pressable style={styles.primaryButton} onPress={handleConfirmImage} disabled={sendingImage}>
+                        <Text style={styles.primaryButtonText}>{sendingImage ? 'Đang gửi...' : 'Gửi ảnh'}</Text>
+                      </Pressable>
+                    </View>
+                  </View>
+                </View>
+              </Modal>
             </>
           )}
 
@@ -224,6 +276,11 @@ const styles = StyleSheet.create({
   messageText: {
     color: '#111827',
   },
+  messageMeta: {
+    marginTop: 6,
+    fontSize: 12,
+    color: '#6b7280',
+  },
   composer: {
     flexDirection: 'row',
     gap: 8,
@@ -256,5 +313,35 @@ const styles = StyleSheet.create({
   },
   errorText: {
     color: '#dc2626',
+  },
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 20,
+  },
+  modalCard: {
+    width: '100%',
+    backgroundColor: '#fff',
+    borderRadius: 18,
+    padding: 16,
+    gap: 12,
+  },
+  previewImage: {
+    width: '100%',
+    height: 280,
+    borderRadius: 12,
+  },
+  modalActions: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: 10,
+  },
+  secondaryActionButton: {
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    borderRadius: 12,
+    backgroundColor: '#e5e7eb',
   },
 });

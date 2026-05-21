@@ -1,12 +1,24 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { onAuthStateChanged, User } from 'firebase/auth';
 import { auth, hasAdminClaim, signInAdmin, signOutAdmin } from '@/lib/auth';
 import { sendAdminImageMessage, sendAdminTextMessage, subscribeMessages, subscribeSessions } from '@/lib/chat';
 import { ChatMessage, ChatSession } from '@/types';
 
+function formatTimestamp(value: unknown) {
+  if (!value || typeof value !== 'object' || !('toDate' in (value as Record<string, unknown>))) return '';
+  const date = (value as { toDate: () => Date }).toDate();
+  return new Intl.DateTimeFormat('vi-VN', {
+    hour: '2-digit',
+    minute: '2-digit',
+    day: '2-digit',
+    month: '2-digit',
+  }).format(date);
+}
+
 export default function HomePage() {
+  const messageEndRef = useRef<HTMLDivElement | null>(null);
   const [user, setUser] = useState<User | null>(null);
   const [isAdmin, setIsAdmin] = useState(false);
   const [checkingRole, setCheckingRole] = useState(true);
@@ -17,6 +29,8 @@ export default function HomePage() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<'login' | 'send' | 'upload' | null>(null);
   const [loadingSessions, setLoadingSessions] = useState(false);
+  const [previewFile, setPreviewFile] = useState<File | null>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
 
   useEffect(() => {
     return onAuthStateChanged(auth, async (nextUser) => {
@@ -65,6 +79,16 @@ export default function HomePage() {
     return subscribeMessages(activeSessionId, setMessages);
   }, [activeSessionId, isAdmin]);
 
+  useEffect(() => {
+    messageEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
+
+  useEffect(() => {
+    return () => {
+      if (previewUrl) URL.revokeObjectURL(previewUrl);
+    };
+  }, [previewUrl]);
+
   const activeSession = useMemo(
     () => sessions.find((session) => session.id === activeSessionId) || null,
     [activeSessionId, sessions],
@@ -97,17 +121,34 @@ export default function HomePage() {
   };
 
   const handleImageChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    if (!activeSessionId || !event.target.files?.[0]) return;
+    const file = event.target.files?.[0];
+    if (!activeSessionId || !file) return;
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    setPreviewFile(file);
+    setPreviewUrl(URL.createObjectURL(file));
+    event.target.value = '';
+  };
+
+  const handleSendPreviewImage = async () => {
+    if (!activeSessionId || !previewFile) return;
     try {
       setBusy('upload');
       setError(null);
-      await sendAdminImageMessage(activeSessionId, event.target.files[0]);
-      event.target.value = '';
+      await sendAdminImageMessage(activeSessionId, previewFile);
+      if (previewUrl) URL.revokeObjectURL(previewUrl);
+      setPreviewFile(null);
+      setPreviewUrl(null);
     } catch {
       setError('Không gửi được ảnh admin.');
     } finally {
       setBusy(null);
     }
+  };
+
+  const handleCancelPreview = () => {
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    setPreviewFile(null);
+    setPreviewUrl(null);
   };
 
   if (!user) {
@@ -200,20 +241,46 @@ export default function HomePage() {
                 <div
                   key={message.id}
                   style={{
-                    ...styles.messageBubble,
-                    ...(message.senderType === 'admin' ? styles.adminBubble : styles.customerBubble),
+                    ...styles.messageRow,
+                    justifyContent: message.senderType === 'admin' ? 'flex-end' : 'flex-start',
                   }}
                 >
-                  <div style={styles.messageSender}>{message.senderType === 'admin' ? 'Admin' : activeSession.customerName}</div>
-                  {message.messageType === 'image' && message.imageUrl ? (
-                    <img src={message.imageUrl} alt="chat image" style={styles.messageImage as React.CSSProperties} />
-                  ) : (
-                    <div>{message.text || ''}</div>
-                  )}
+                  <div
+                    style={{
+                      ...styles.messageBubble,
+                      ...(message.senderType === 'admin' ? styles.adminBubble : styles.customerBubble),
+                    }}
+                  >
+                    <div style={styles.messageSender}>{message.senderType === 'admin' ? 'Admin' : activeSession.customerName}</div>
+                    {message.messageType === 'image' && message.imageUrl ? (
+                      <img src={message.imageUrl} alt="chat image" style={styles.messageImage as React.CSSProperties} />
+                    ) : (
+                      <div>{message.text || ''}</div>
+                    )}
+                    <div style={styles.messageTime}>{formatTimestamp(message.createdAt)}</div>
+                  </div>
                 </div>
               ))}
               {!messages.length ? <p style={styles.muted}>Chưa có tin nhắn trong phiên này.</p> : null}
+              <div ref={messageEndRef} />
             </div>
+
+            {previewUrl ? (
+              <div style={styles.previewPanel}>
+                <div>
+                  <div style={styles.previewTitle}>Ảnh sắp gửi</div>
+                  <img src={previewUrl} alt="preview" style={styles.previewImage as React.CSSProperties} />
+                </div>
+                <div style={styles.previewActions}>
+                  <button style={styles.secondaryButton} onClick={handleCancelPreview} disabled={busy === 'upload'}>
+                    Hủy
+                  </button>
+                  <button style={styles.primaryButton} onClick={handleSendPreviewImage} disabled={busy === 'upload'}>
+                    {busy === 'upload' ? 'Đang tải ảnh...' : 'Gửi ảnh'}
+                  </button>
+                </div>
+              </div>
+            ) : null}
 
             <div style={styles.composer}>
               <input
@@ -224,7 +291,7 @@ export default function HomePage() {
                 disabled={busy === 'send' || busy === 'upload'}
               />
               <label style={styles.fileButton}>
-                {busy === 'upload' ? 'Đang tải ảnh...' : 'Ảnh'}
+                Chọn ảnh
                 <input
                   type="file"
                   accept="image/*"
@@ -345,6 +412,10 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: 16,
     padding: 20,
     minHeight: 420,
+    overflowY: 'auto',
+  },
+  messageRow: {
+    display: 'flex',
   },
   messageBubble: {
     padding: 12,
@@ -352,11 +423,9 @@ const styles: Record<string, React.CSSProperties> = {
     maxWidth: '70%',
   },
   customerBubble: {
-    alignSelf: 'flex-start',
     background: '#e5e7eb',
   },
   adminBubble: {
-    alignSelf: 'flex-end',
     background: '#4f46e5',
     color: '#fff',
   },
@@ -364,6 +433,11 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 12,
     fontWeight: 700,
     marginBottom: 6,
+  },
+  messageTime: {
+    marginTop: 8,
+    fontSize: 11,
+    opacity: 0.75,
   },
   composer: {
     display: 'flex',
@@ -409,7 +483,30 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 700,
     display: 'inline-flex',
     alignItems: 'center',
-    opacity: 1,
+  },
+  previewPanel: {
+    background: '#fff',
+    borderRadius: 16,
+    padding: 16,
+    display: 'flex',
+    gap: 16,
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  previewTitle: {
+    fontWeight: 700,
+    marginBottom: 8,
+  },
+  previewImage: {
+    width: 160,
+    height: 160,
+    objectFit: 'cover',
+    borderRadius: 12,
+  },
+  previewActions: {
+    display: 'flex',
+    gap: 12,
+    alignItems: 'center',
   },
   error: {
     color: '#dc2626',

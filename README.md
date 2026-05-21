@@ -87,4 +87,5 @@ See `docs/firebase-admin-setup.md` for setup details.
 - Mobile customers can only access their own session and messages.
 - Web admins should be granted `admin: true` through Firebase custom claims.
 - The web UI now checks the admin claim after Google sign-in and blocks non-admin users.
+- UX polish added: auto-scroll, message timestamps on web, and image preview before sending.
 - Access control should still rely on deployed Firebase rules, not only UI behavior.
