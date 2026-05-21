@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { onAuthStateChanged, User } from 'firebase/auth';
 import { auth, signInAdmin, signOutAdmin } from '@/lib/auth';
-import { sendAdminTextMessage, subscribeMessages, subscribeSessions } from '@/lib/chat';
+import { sendAdminImageMessage, sendAdminTextMessage, subscribeMessages, subscribeSessions } from '@/lib/chat';
 import { ChatMessage, ChatSession } from '@/types';
 
 export default function HomePage() {
@@ -43,6 +43,16 @@ export default function HomePage() {
       setDraft('');
     } catch (err) {
       setError('Không gửi được tin nhắn admin.');
+    }
+  };
+
+  const handleImageChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    if (!activeSessionId || !event.target.files?.[0]) return;
+    try {
+      await sendAdminImageMessage(activeSessionId, event.target.files[0]);
+      event.target.value = '';
+    } catch (err) {
+      setError('Không gửi được ảnh admin.');
     }
   };
 
@@ -112,7 +122,11 @@ export default function HomePage() {
                   }}
                 >
                   <div style={styles.messageSender}>{message.senderType === 'admin' ? 'Admin' : activeSession.customerName}</div>
-                  <div>{message.text || ''}</div>
+                  {message.messageType === 'image' && message.imageUrl ? (
+                    <img src={message.imageUrl} alt="chat image" style={styles.messageImage as React.CSSProperties} />
+                  ) : (
+                    <div>{message.text || ''}</div>
+                  )}
                 </div>
               ))}
               {!messages.length ? <p style={styles.muted}>Chưa có tin nhắn trong phiên này.</p> : null}
@@ -125,6 +139,10 @@ export default function HomePage() {
                 placeholder="Nhập tin nhắn trả lời"
                 style={styles.input}
               />
+              <label style={styles.fileButton}>
+                Ảnh
+                <input type="file" accept="image/*" onChange={handleImageChange} style={{ display: 'none' }} />
+              </label>
               <button style={styles.primaryButton} onClick={handleSend}>
                 Gửi
               </button>
@@ -258,6 +276,12 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: 16,
     padding: 16,
   },
+  messageImage: {
+    width: 220,
+    height: 220,
+    objectFit: 'cover',
+    borderRadius: 12,
+  },
   input: {
     flex: 1,
     border: '1px solid #d1d5db',
@@ -279,6 +303,16 @@ const styles: Record<string, React.CSSProperties> = {
     background: '#fff',
     padding: '10px 12px',
     cursor: 'pointer',
+  },
+  fileButton: {
+    borderRadius: 12,
+    background: '#0f766e',
+    color: '#fff',
+    padding: '12px 16px',
+    cursor: 'pointer',
+    fontWeight: 700,
+    display: 'inline-flex',
+    alignItems: 'center',
   },
   error: {
     color: '#dc2626',

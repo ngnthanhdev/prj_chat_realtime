@@ -1,8 +1,10 @@
 import { StatusBar } from 'expo-status-bar';
+import * as ImagePicker from 'expo-image-picker';
 import { useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   FlatList,
+  Image,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -14,7 +16,7 @@ import {
 } from 'react-native';
 import { firebaseApp } from './lib/firebase';
 import { ensureAnonymousUser } from './lib/auth';
-import { createChatSession, sendTextMessage, subscribeMessages } from './lib/chat';
+import { createChatSession, sendImageMessage, sendTextMessage, subscribeMessages } from './lib/chat';
 import { ChatMessage } from './types';
 
 void firebaseApp;
@@ -67,6 +69,21 @@ export default function App() {
     }
   };
 
+  const handlePickImage = async () => {
+    if (!sessionId) return;
+    try {
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ['images'],
+        quality: 0.8,
+      });
+
+      if (result.canceled || !result.assets[0]?.uri) return;
+      await sendImageMessage(sessionId, result.assets[0].uri);
+    } catch (err) {
+      setError('Không gửi được ảnh.');
+    }
+  };
+
   return (
     <SafeAreaView style={styles.container}>
       <KeyboardAvoidingView style={styles.wrapper} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
@@ -100,7 +117,11 @@ export default function App() {
                     ]}
                   >
                     <Text style={styles.messageSender}>{item.senderType === 'customer' ? customerName : 'Admin'}</Text>
-                    <Text style={styles.messageText}>{item.text || ''}</Text>
+                    {item.messageType === 'image' && item.imageUrl ? (
+                      <Image source={{ uri: item.imageUrl }} style={styles.messageImage} />
+                    ) : (
+                      <Text style={styles.messageText}>{item.text || ''}</Text>
+                    )}
                   </View>
                 )}
                 ListEmptyComponent={<Text style={styles.emptyText}>Chưa có tin nhắn nào.</Text>}
@@ -113,6 +134,9 @@ export default function App() {
                   placeholder="Nhập tin nhắn"
                   style={[styles.input, styles.composerInput]}
                 />
+                <Pressable style={styles.imageButton} onPress={handlePickImage}>
+                  <Text style={styles.primaryButtonText}>Ảnh</Text>
+                </Pressable>
                 <Pressable style={styles.sendButton} onPress={handleSendMessage}>
                   <Text style={styles.primaryButtonText}>Gửi</Text>
                 </Pressable>
@@ -205,8 +229,19 @@ const styles = StyleSheet.create({
     gap: 8,
     alignItems: 'center',
   },
+  messageImage: {
+    width: 180,
+    height: 180,
+    borderRadius: 12,
+  },
   composerInput: {
     flex: 1,
+  },
+  imageButton: {
+    backgroundColor: '#0f766e',
+    paddingHorizontal: 18,
+    paddingVertical: 14,
+    borderRadius: 12,
   },
   sendButton: {
     backgroundColor: '#111827',

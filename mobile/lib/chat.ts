@@ -10,9 +10,12 @@ import {
   serverTimestamp,
   updateDoc,
 } from 'firebase/firestore';
+import { getDownloadURL, getStorage, ref, uploadBytes } from 'firebase/storage';
 import { ChatMessage } from '../types';
 
-const db = getFirestore(getApp());
+const app = getApp();
+const db = getFirestore(app);
+const storage = getStorage(app);
 
 export async function createChatSession(customerName: string, customerUid: string) {
   const sessionRef = await addDoc(collection(db, 'chat_sessions'), {
@@ -44,6 +47,28 @@ export async function sendTextMessage(sessionId: string, text: string) {
     updatedAt: serverTimestamp(),
     lastMessage: trimmed,
     lastMessageType: 'text',
+    lastMessageAt: serverTimestamp(),
+  });
+}
+
+export async function sendImageMessage(sessionId: string, uri: string) {
+  const response = await fetch(uri);
+  const blob = await response.blob();
+  const fileRef = ref(storage, `chat_images/${sessionId}/${Date.now()}.jpg`);
+  await uploadBytes(fileRef, blob);
+  const imageUrl = await getDownloadURL(fileRef);
+
+  await addDoc(collection(db, 'chat_sessions', sessionId, 'messages'), {
+    senderType: 'customer',
+    messageType: 'image',
+    imageUrl,
+    createdAt: serverTimestamp(),
+  });
+
+  await updateDoc(doc(db, 'chat_sessions', sessionId), {
+    updatedAt: serverTimestamp(),
+    lastMessage: '[image]',
+    lastMessageType: 'image',
     lastMessageAt: serverTimestamp(),
   });
 }
