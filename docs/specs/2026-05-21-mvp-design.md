@@ -49,8 +49,13 @@ Build a realtime chat system between a customer mobile app and an admin web app.
 2. Enter customer name.
 3. Create a new chat session.
 4. Open chat room for that session.
-5. Send text and images.
-6. Receive admin messages in realtime.
+5. Send text messages in realtime in Task 2.
+6. Send and receive images in a later task.
+7. Receive admin messages in realtime.
+
+## Implementation Progress
+- Task 1: scaffold repo, Firebase client bootstrapping, baseline spec.
+- Task 2: customer anonymous auth, customer name entry, create new session on every app entry, realtime text messaging on mobile.
 
 ### Web
 1. Admin logs in.
