@@ -1,32 +1,52 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    function isSignedIn() {
+    function signedIn() {
       return request.auth != null;
     }
 
-    function isOwner(session) {
-      return isSignedIn() && session.data.customerUid == request.auth.uid;
+    function isAdmin() {
+      return signedIn() && request.auth.token.admin == true;
+    }
+
+    function sessionDoc(sessionId) {
+      return get(/databases/$(database)/documents/chat_sessions/$(sessionId));
+    }
+
+    function isSessionOwner(sessionId) {
+      return signedIn() && sessionDoc(sessionId).data.customerUid == request.auth.uid;
     }
 
     match /chat_sessions/{sessionId} {
-      allow create: if isSignedIn()
+      allow create: if signedIn()
         && request.resource.data.customerUid == request.auth.uid
-        && request.resource.data.customerName is string;
+        && request.resource.data.customerName is string
+        && request.resource.data.customerName.size() > 0
+        && request.resource.data.status == 'open';
 
-      allow read: if isSignedIn();
+      allow read: if isAdmin() || isSessionOwner(sessionId);
 
-      allow update: if isSignedIn() && (
-        resource.data.customerUid == request.auth.uid ||
-        true
+      allow update: if isAdmin() || (
+        isSessionOwner(sessionId)
+        && request.resource.data.customerUid == resource.data.customerUid
+        && request.resource.data.customerName == resource.data.customerName
+        && request.resource.data.status == resource.data.status
       );
 
+      allow delete: if false;
+
       match /messages/{messageId} {
-        allow read: if isSignedIn();
-        allow create: if isSignedIn() && (
-          get(/databases/$(database)/documents/chat_sessions/$(sessionId)).data.customerUid == request.auth.uid ||
-          true
+        allow read: if isAdmin() || isSessionOwner(sessionId);
+
+        allow create: if (
+          isSessionOwner(sessionId)
+          && request.resource.data.senderType == 'customer'
+        ) || (
+          isAdmin()
+          && request.resource.data.senderType == 'admin'
         );
+
+        allow update, delete: if false;
       }
     }
   }

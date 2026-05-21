@@ -1,9 +1,26 @@
 rules_version = '2';
 service firebase.storage {
   match /b/{bucket}/o {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return signedIn() && request.auth.token.admin == true;
+    }
+
+    function sessionDoc(sessionId) {
+      return firestore.get(/databases/(default)/documents/chat_sessions/$(sessionId));
+    }
+
+    function isSessionOwner(sessionId) {
+      return signedIn() && sessionDoc(sessionId).data.customerUid == request.auth.uid;
+    }
+
     match /chat_images/{sessionId}/{fileName} {
-      allow read: if request.auth != null;
-      allow write: if request.auth != null;
+      allow read: if isAdmin() || isSessionOwner(sessionId);
+      allow write: if isAdmin() || isSessionOwner(sessionId);
+      allow delete: if false;
     }
   }
 }

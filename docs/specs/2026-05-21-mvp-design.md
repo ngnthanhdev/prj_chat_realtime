@@ -49,8 +49,8 @@ Build a realtime chat system between a customer mobile app and an admin web app.
 2. Enter customer name.
 3. Create a new chat session.
 4. Open chat room for that session.
-5. Send text messages in realtime in Task 2.
-6. Send and receive images in a later task.
+5. Send text messages in realtime.
+6. Send and receive image messages.
 7. Receive admin messages in realtime.
 
 ## Implementation Progress
@@ -59,6 +59,7 @@ Build a realtime chat system between a customer mobile app and an admin web app.
 - Task 3: admin Google sign-in on web, realtime session list, open session, reply with text in realtime.
 - Task 4: image upload and image messages for both mobile and web using Firebase Storage.
 - Task 5: Firebase env examples, starter security rules, README setup guide, and final MVP spec polish.
+- Task 6: hardened Firebase rules using admin custom claims and owner-scoped access, plus admin setup documentation.
 
 ### Web
 1. Admin logs in.
@@ -69,10 +70,10 @@ Build a realtime chat system between a customer mobile app and an admin web app.
 
 ## Firebase Notes
 - Customers use anonymous auth.
-- Admins use Firebase Auth and are identified through custom claims or a temporary allowlist in app logic for MVP.
+- Admins use Firebase Auth and should be identified through Firebase custom claims.
 - Images are uploaded to Firebase Storage and their URL is stored in messages.
 - Current implementation uses Google sign-in for web admin UI and anonymous auth for mobile customer flow.
-- Current rules are MVP starter rules and need hardening before production.
+- Firestore and Storage rules are hardened around `admin: true` claim and session owner access.
 
 ## Non-goals for v1
 - Push notifications

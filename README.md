@@ -73,6 +73,17 @@ EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID=
 EXPO_PUBLIC_FIREBASE_APP_ID=
 ```
 
+## Security setup
+This version now expects real admin accounts to have a Firebase custom claim:
+
+```json
+{ "admin": true }
+```
+
+See `docs/firebase-admin-setup.md` for setup details.
+
 ## Notes
-- Current rules files are starter rules for MVP and should be hardened before production.
-- The web app currently treats any signed-in Google user as admin at app level. Production should enforce admin access with custom claims or role documents.
+- Firestore and Storage rules are now scoped by session owner or admin claim.
+- Mobile customers can only access their own session and messages.
+- Web admins should be granted `admin: true` through Firebase custom claims.
+- The current web UI still signs in with Google normally, but access control should rely on deployed Firebase rules.
