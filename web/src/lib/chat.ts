@@ -57,6 +57,13 @@ export async function sendAdminTextMessage(sessionId: string, text: string) {
   });
 }
 
+export async function closeChatSession(sessionId: string) {
+  await updateDoc(doc(db, 'chat_sessions', sessionId), {
+    status: 'closed',
+    updatedAt: serverTimestamp(),
+  });
+}
+
 export async function sendAdminImageMessage(sessionId: string, file: File) {
   const fileRef = ref(storage, `chat_images/${sessionId}/${Date.now()}-${file.name}`);
   await uploadBytes(fileRef, file);

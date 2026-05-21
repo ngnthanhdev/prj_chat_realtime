@@ -62,6 +62,7 @@ Build a realtime chat system between a customer mobile app and an admin web app.
 - Task 6: hardened Firebase rules using admin custom claims and owner-scoped access, plus admin setup documentation.
 - Task 7: web admin claim guard, improved loading and error states, and setup documentation polish.
 - Task 8: deployment helper docs/scripts plus UX polish including auto-scroll, timestamps, and image preview before send.
+- Task 9: env validation, UI component extraction, mobile timestamps, and admin close-session action.
 
 ### Web
 1. Admin logs in.

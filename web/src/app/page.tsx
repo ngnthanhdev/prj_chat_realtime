@@ -3,19 +3,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { onAuthStateChanged, User } from 'firebase/auth';
 import { auth, hasAdminClaim, signInAdmin, signOutAdmin } from '@/lib/auth';
-import { sendAdminImageMessage, sendAdminTextMessage, subscribeMessages, subscribeSessions } from '@/lib/chat';
+import { closeChatSession, sendAdminImageMessage, sendAdminTextMessage, subscribeMessages, subscribeSessions } from '@/lib/chat';
 import { ChatMessage, ChatSession } from '@/types';
-
-function formatTimestamp(value: unknown) {
-  if (!value || typeof value !== 'object' || !('toDate' in (value as Record<string, unknown>))) return '';
-  const date = (value as { toDate: () => Date }).toDate();
-  return new Intl.DateTimeFormat('vi-VN', {
-    hour: '2-digit',
-    minute: '2-digit',
-    day: '2-digit',
-    month: '2-digit',
-  }).format(date);
-}
+import { ChatSessionList } from '@/components/chat-session-list';
+import { ChatMessageList } from '@/components/chat-message-list';
 
 export default function HomePage() {
   const messageEndRef = useRef<HTMLDivElement | null>(null);
@@ -27,7 +18,7 @@ export default function HomePage() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [draft, setDraft] = useState('');
   const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState<'login' | 'send' | 'upload' | null>(null);
+  const [busy, setBusy] = useState<'login' | 'send' | 'upload' | 'close' | null>(null);
   const [loadingSessions, setLoadingSessions] = useState(false);
   const [previewFile, setPreviewFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
@@ -47,9 +38,7 @@ export default function HomePage() {
       try {
         const admin = await hasAdminClaim(nextUser);
         setIsAdmin(admin);
-        if (!admin) {
-          setError('Tài khoản này chưa được cấp quyền admin.');
-        }
+        if (!admin) setError('Tài khoản này chưa được cấp quyền admin.');
       } catch {
         setIsAdmin(false);
         setError('Không kiểm tra được quyền admin.');
@@ -61,13 +50,11 @@ export default function HomePage() {
 
   useEffect(() => {
     if (!user || !isAdmin) return;
-
     setLoadingSessions(true);
     const unsubscribe = subscribeSessions((nextSessions) => {
       setSessions(nextSessions);
       setLoadingSessions(false);
     });
-
     return () => unsubscribe();
   }, [user, isAdmin]);
 
@@ -151,6 +138,19 @@ export default function HomePage() {
     setPreviewUrl(null);
   };
 
+  const handleCloseSession = async () => {
+    if (!activeSessionId) return;
+    try {
+      setBusy('close');
+      setError(null);
+      await closeChatSession(activeSessionId);
+    } catch {
+      setError('Không đóng được session.');
+    } finally {
+      setBusy(null);
+    }
+  };
+
   if (!user) {
     return (
       <main style={styles.centeredPage}>
@@ -207,23 +207,12 @@ export default function HomePage() {
           </button>
         </div>
 
-        <div style={styles.sessionList}>
-          {loadingSessions ? <p style={styles.muted}>Đang tải danh sách chat...</p> : null}
-          {!loadingSessions && !sessions.length ? <p style={styles.muted}>Chưa có phiên chat nào.</p> : null}
-          {sessions.map((session) => (
-            <button
-              key={session.id}
-              style={{
-                ...styles.sessionItem,
-                ...(session.id === activeSessionId ? styles.sessionItemActive : {}),
-              }}
-              onClick={() => setActiveSessionId(session.id)}
-            >
-              <strong>{session.customerName}</strong>
-              <span style={styles.mutedSmall}>{session.lastMessage || 'Chưa có tin nhắn'}</span>
-            </button>
-          ))}
-        </div>
+        <ChatSessionList
+          sessions={sessions}
+          activeSessionId={activeSessionId}
+          loading={loadingSessions}
+          onSelect={setActiveSessionId}
+        />
       </aside>
 
       <section style={styles.chatPanel}>
@@ -233,37 +222,14 @@ export default function HomePage() {
               <div>
                 <h2 style={styles.subtitle}>{activeSession.customerName}</h2>
                 <p style={styles.muted}>Session: {activeSession.id}</p>
+                <p style={styles.muted}>Trạng thái: {activeSession.status}</p>
               </div>
+              <button style={styles.closeButton} onClick={handleCloseSession} disabled={busy === 'close' || activeSession.status === 'closed'}>
+                {busy === 'close' ? 'Đang đóng...' : activeSession.status === 'closed' ? 'Đã đóng' : 'Đóng session'}
+              </button>
             </div>
 
-            <div style={styles.messageList}>
-              {messages.map((message) => (
-                <div
-                  key={message.id}
-                  style={{
-                    ...styles.messageRow,
-                    justifyContent: message.senderType === 'admin' ? 'flex-end' : 'flex-start',
-                  }}
-                >
-                  <div
-                    style={{
-                      ...styles.messageBubble,
-                      ...(message.senderType === 'admin' ? styles.adminBubble : styles.customerBubble),
-                    }}
-                  >
-                    <div style={styles.messageSender}>{message.senderType === 'admin' ? 'Admin' : activeSession.customerName}</div>
-                    {message.messageType === 'image' && message.imageUrl ? (
-                      <img src={message.imageUrl} alt="chat image" style={styles.messageImage as React.CSSProperties} />
-                    ) : (
-                      <div>{message.text || ''}</div>
-                    )}
-                    <div style={styles.messageTime}>{formatTimestamp(message.createdAt)}</div>
-                  </div>
-                </div>
-              ))}
-              {!messages.length ? <p style={styles.muted}>Chưa có tin nhắn trong phiên này.</p> : null}
-              <div ref={messageEndRef} />
-            </div>
+            <ChatMessageList messages={messages} customerName={activeSession.customerName} endRef={messageEndRef} />
 
             {previewUrl ? (
               <div style={styles.previewPanel}>
@@ -288,7 +254,7 @@ export default function HomePage() {
                 onChange={(event) => setDraft(event.target.value)}
                 placeholder="Nhập tin nhắn trả lời"
                 style={styles.input}
-                disabled={busy === 'send' || busy === 'upload'}
+                disabled={busy === 'send' || busy === 'upload' || activeSession.status === 'closed'}
               />
               <label style={styles.fileButton}>
                 Chọn ảnh
@@ -297,13 +263,14 @@ export default function HomePage() {
                   accept="image/*"
                   onChange={handleImageChange}
                   style={{ display: 'none' }}
-                  disabled={busy === 'send' || busy === 'upload'}
+                  disabled={busy === 'send' || busy === 'upload' || activeSession.status === 'closed'}
                 />
               </label>
-              <button style={styles.primaryButton} onClick={handleSend} disabled={busy === 'send' || busy === 'upload'}>
+              <button style={styles.primaryButton} onClick={handleSend} disabled={busy === 'send' || busy === 'upload' || activeSession.status === 'closed'}>
                 {busy === 'send' ? 'Đang gửi...' : 'Gửi'}
               </button>
             </div>
+            {activeSession.status === 'closed' ? <p style={styles.muted}>Session này đã đóng, chỉ còn xem lịch sử.</p> : null}
             {error ? <p style={styles.error}>{error}</p> : null}
           </>
         ) : (
@@ -363,34 +330,10 @@ const styles: Record<string, React.CSSProperties> = {
   muted: {
     color: '#6b7280',
   },
-  mutedSmall: {
-    color: '#6b7280',
-    fontSize: 13,
-    textAlign: 'left',
-  },
   actionRow: {
     display: 'flex',
     gap: 12,
     marginTop: 16,
-  },
-  sessionList: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 10,
-  },
-  sessionItem: {
-    border: '1px solid #e5e7eb',
-    borderRadius: 14,
-    padding: 14,
-    background: '#f9fafb',
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 6,
-    cursor: 'pointer',
-  },
-  sessionItemActive: {
-    borderColor: '#4f46e5',
-    background: '#eef2ff',
   },
   chatPanel: {
     padding: 24,
@@ -402,42 +345,10 @@ const styles: Record<string, React.CSSProperties> = {
     background: '#fff',
     borderRadius: 16,
     padding: 20,
-  },
-  messageList: {
-    flex: 1,
     display: 'flex',
-    flexDirection: 'column',
-    gap: 12,
-    background: '#fff',
-    borderRadius: 16,
-    padding: 20,
-    minHeight: 420,
-    overflowY: 'auto',
-  },
-  messageRow: {
-    display: 'flex',
-  },
-  messageBubble: {
-    padding: 12,
-    borderRadius: 14,
-    maxWidth: '70%',
-  },
-  customerBubble: {
-    background: '#e5e7eb',
-  },
-  adminBubble: {
-    background: '#4f46e5',
-    color: '#fff',
-  },
-  messageSender: {
-    fontSize: 12,
-    fontWeight: 700,
-    marginBottom: 6,
-  },
-  messageTime: {
-    marginTop: 8,
-    fontSize: 11,
-    opacity: 0.75,
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 16,
   },
   composer: {
     display: 'flex',
@@ -445,12 +356,6 @@ const styles: Record<string, React.CSSProperties> = {
     background: '#fff',
     borderRadius: 16,
     padding: 16,
-  },
-  messageImage: {
-    width: 220,
-    height: 220,
-    objectFit: 'cover',
-    borderRadius: 12,
   },
   input: {
     flex: 1,
@@ -473,6 +378,15 @@ const styles: Record<string, React.CSSProperties> = {
     background: '#fff',
     padding: '10px 12px',
     cursor: 'pointer',
+  },
+  closeButton: {
+    border: 'none',
+    borderRadius: 12,
+    background: '#b91c1c',
+    color: '#fff',
+    padding: '12px 16px',
+    cursor: 'pointer',
+    fontWeight: 700,
   },
   fileButton: {
     borderRadius: 12,

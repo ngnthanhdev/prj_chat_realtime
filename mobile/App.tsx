@@ -5,8 +5,8 @@ import {
   ActivityIndicator,
   FlatList,
   Image,
-  Modal,
   KeyboardAvoidingView,
+  Modal,
   Platform,
   Pressable,
   SafeAreaView,
@@ -19,6 +19,7 @@ import { firebaseApp } from './lib/firebase';
 import { ensureAnonymousUser } from './lib/auth';
 import { createChatSession, sendImageMessage, sendTextMessage, subscribeMessages } from './lib/chat';
 import { ChatMessage } from './types';
+import { ChatMessageList } from './components/chat-message-list';
 
 void firebaseApp;
 
@@ -63,7 +64,7 @@ export default function App() {
       const newSessionId = await createChatSession(trimmed, user.uid);
       setSessionId(newSessionId);
       setReady(true);
-    } catch (err) {
+    } catch {
       setError('Không thể tạo phiên chat. Hãy kiểm tra Firebase config.');
     } finally {
       setLoading(false);
@@ -78,7 +79,7 @@ export default function App() {
       setError(null);
       await sendTextMessage(sessionId, draft);
       setDraft('');
-    } catch (err) {
+    } catch {
       setError('Không gửi được tin nhắn.');
     } finally {
       setSendingText(false);
@@ -95,7 +96,7 @@ export default function App() {
 
       if (result.canceled || !result.assets[0]?.uri) return;
       setPreviewImage(result.assets[0].uri);
-    } catch (err) {
+    } catch {
       setError('Không chọn được ảnh.');
     }
   };
@@ -107,7 +108,7 @@ export default function App() {
       setError(null);
       await sendImageMessage(sessionId, previewImage);
       setPreviewImage(null);
-    } catch (err) {
+    } catch {
       setError('Không gửi được ảnh.');
     } finally {
       setSendingImage(false);
@@ -135,31 +136,7 @@ export default function App() {
             </View>
           ) : (
             <>
-              <FlatList
-                ref={listRef}
-                data={messages}
-                keyExtractor={(item) => item.id}
-                contentContainerStyle={styles.messageList}
-                renderItem={({ item }) => (
-                  <View
-                    style={[
-                      styles.messageBubble,
-                      item.senderType === 'customer' ? styles.customerBubble : styles.adminBubble,
-                    ]}
-                  >
-                    <Text style={styles.messageSender}>{item.senderType === 'customer' ? customerName : 'Admin'}</Text>
-                    {item.messageType === 'image' && item.imageUrl ? (
-                      <>
-                        <Image source={{ uri: item.imageUrl }} style={styles.messageImage} />
-                        <Text style={styles.messageMeta}>Ảnh</Text>
-                      </>
-                    ) : (
-                      <Text style={styles.messageText}>{item.text || ''}</Text>
-                    )}
-                  </View>
-                )}
-                ListEmptyComponent={<Text style={styles.emptyText}>Chưa có tin nhắn nào.</Text>}
-              />
+              <ChatMessageList listRef={listRef} messages={messages} customerName={customerName} />
 
               <View style={styles.composer}>
                 <TextInput
@@ -243,6 +220,7 @@ const styles = StyleSheet.create({
   primaryButton: {
     backgroundColor: '#4f46e5',
     paddingVertical: 14,
+    paddingHorizontal: 16,
     borderRadius: 12,
     alignItems: 'center',
   },
@@ -250,46 +228,10 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontWeight: '700',
   },
-  messageList: {
-    gap: 12,
-    paddingVertical: 12,
-  },
-  messageBubble: {
-    padding: 12,
-    borderRadius: 14,
-    maxWidth: '85%',
-  },
-  customerBubble: {
-    alignSelf: 'flex-end',
-    backgroundColor: '#4f46e5',
-  },
-  adminBubble: {
-    alignSelf: 'flex-start',
-    backgroundColor: '#e5e7eb',
-  },
-  messageSender: {
-    fontSize: 12,
-    fontWeight: '700',
-    marginBottom: 6,
-    color: '#374151',
-  },
-  messageText: {
-    color: '#111827',
-  },
-  messageMeta: {
-    marginTop: 6,
-    fontSize: 12,
-    color: '#6b7280',
-  },
   composer: {
     flexDirection: 'row',
     gap: 8,
     alignItems: 'center',
-  },
-  messageImage: {
-    width: 180,
-    height: 180,
-    borderRadius: 12,
   },
   composerInput: {
     flex: 1,
@@ -305,11 +247,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 18,
     paddingVertical: 14,
     borderRadius: 12,
-  },
-  emptyText: {
-    color: '#6b7280',
-    textAlign: 'center',
-    marginTop: 12,
   },
   errorText: {
     color: '#dc2626',
