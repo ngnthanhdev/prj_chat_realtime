@@ -2,57 +2,111 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { onAuthStateChanged, User } from 'firebase/auth';
-import { auth, signInAdmin, signOutAdmin } from '@/lib/auth';
+import { auth, hasAdminClaim, signInAdmin, signOutAdmin } from '@/lib/auth';
 import { sendAdminImageMessage, sendAdminTextMessage, subscribeMessages, subscribeSessions } from '@/lib/chat';
 import { ChatMessage, ChatSession } from '@/types';
 
 export default function HomePage() {
   const [user, setUser] = useState<User | null>(null);
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [checkingRole, setCheckingRole] = useState(true);
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [draft, setDraft] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState<'login' | 'send' | 'upload' | null>(null);
+  const [loadingSessions, setLoadingSessions] = useState(false);
 
   useEffect(() => {
-    return onAuthStateChanged(auth, setUser);
+    return onAuthStateChanged(auth, async (nextUser) => {
+      setUser(nextUser);
+      setError(null);
+
+      if (!nextUser) {
+        setIsAdmin(false);
+        setCheckingRole(false);
+        return;
+      }
+
+      setCheckingRole(true);
+      try {
+        const admin = await hasAdminClaim(nextUser);
+        setIsAdmin(admin);
+        if (!admin) {
+          setError('Tài khoản này chưa được cấp quyền admin.');
+        }
+      } catch {
+        setIsAdmin(false);
+        setError('Không kiểm tra được quyền admin.');
+      } finally {
+        setCheckingRole(false);
+      }
+    });
   }, []);
 
   useEffect(() => {
-    if (!user) return;
-    return subscribeSessions(setSessions);
-  }, [user]);
+    if (!user || !isAdmin) return;
+
+    setLoadingSessions(true);
+    const unsubscribe = subscribeSessions((nextSessions) => {
+      setSessions(nextSessions);
+      setLoadingSessions(false);
+    });
+
+    return () => unsubscribe();
+  }, [user, isAdmin]);
 
   useEffect(() => {
-    if (!activeSessionId) {
+    if (!activeSessionId || !isAdmin) {
       setMessages([]);
       return;
     }
     return subscribeMessages(activeSessionId, setMessages);
-  }, [activeSessionId]);
+  }, [activeSessionId, isAdmin]);
 
   const activeSession = useMemo(
     () => sessions.find((session) => session.id === activeSessionId) || null,
     [activeSessionId, sessions],
   );
 
+  const handleLogin = async () => {
+    try {
+      setBusy('login');
+      setError(null);
+      await signInAdmin();
+    } catch {
+      setError('Đăng nhập thất bại.');
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const handleSend = async () => {
     if (!activeSessionId || !draft.trim()) return;
     try {
+      setBusy('send');
+      setError(null);
       await sendAdminTextMessage(activeSessionId, draft);
       setDraft('');
-    } catch (err) {
+    } catch {
       setError('Không gửi được tin nhắn admin.');
+    } finally {
+      setBusy(null);
     }
   };
 
   const handleImageChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
     if (!activeSessionId || !event.target.files?.[0]) return;
     try {
+      setBusy('upload');
+      setError(null);
       await sendAdminImageMessage(activeSessionId, event.target.files[0]);
       event.target.value = '';
-    } catch (err) {
+    } catch {
       setError('Không gửi được ảnh admin.');
+    } finally {
+      setBusy(null);
     }
   };
 
@@ -62,9 +116,37 @@ export default function HomePage() {
         <div style={styles.loginCard}>
           <h1 style={styles.title}>Realtime Chat Admin</h1>
           <p style={styles.muted}>Đăng nhập bằng Google để vào màn trả lời chat.</p>
-          <button style={styles.primaryButton} onClick={() => signInAdmin().catch(() => setError('Đăng nhập thất bại.'))}>
-            Đăng nhập với Google
+          <button style={styles.primaryButton} onClick={handleLogin} disabled={busy === 'login'}>
+            {busy === 'login' ? 'Đang đăng nhập...' : 'Đăng nhập với Google'}
           </button>
+          {error ? <p style={styles.error}>{error}</p> : null}
+        </div>
+      </main>
+    );
+  }
+
+  if (checkingRole) {
+    return (
+      <main style={styles.centeredPage}>
+        <div style={styles.loginCard}>
+          <h1 style={styles.title}>Đang kiểm tra quyền</h1>
+          <p style={styles.muted}>Chờ một chút, mình đang kiểm tra admin claim.</p>
+        </div>
+      </main>
+    );
+  }
+
+  if (!isAdmin) {
+    return (
+      <main style={styles.centeredPage}>
+        <div style={styles.loginCard}>
+          <h1 style={styles.title}>Chưa có quyền admin</h1>
+          <p style={styles.muted}>Tài khoản này đã đăng nhập nhưng chưa được cấp claim `admin: true`.</p>
+          <div style={styles.actionRow}>
+            <button style={styles.secondaryButton} onClick={() => signOutAdmin()}>
+              Đăng xuất
+            </button>
+          </div>
           {error ? <p style={styles.error}>{error}</p> : null}
         </div>
       </main>
@@ -85,6 +167,8 @@ export default function HomePage() {
         </div>
 
         <div style={styles.sessionList}>
+          {loadingSessions ? <p style={styles.muted}>Đang tải danh sách chat...</p> : null}
+          {!loadingSessions && !sessions.length ? <p style={styles.muted}>Chưa có phiên chat nào.</p> : null}
           {sessions.map((session) => (
             <button
               key={session.id}
@@ -98,7 +182,6 @@ export default function HomePage() {
               <span style={styles.mutedSmall}>{session.lastMessage || 'Chưa có tin nhắn'}</span>
             </button>
           ))}
-          {!sessions.length ? <p style={styles.muted}>Chưa có phiên chat nào.</p> : null}
         </div>
       </aside>
 
@@ -138,15 +221,23 @@ export default function HomePage() {
                 onChange={(event) => setDraft(event.target.value)}
                 placeholder="Nhập tin nhắn trả lời"
                 style={styles.input}
+                disabled={busy === 'send' || busy === 'upload'}
               />
               <label style={styles.fileButton}>
-                Ảnh
-                <input type="file" accept="image/*" onChange={handleImageChange} style={{ display: 'none' }} />
+                {busy === 'upload' ? 'Đang tải ảnh...' : 'Ảnh'}
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={handleImageChange}
+                  style={{ display: 'none' }}
+                  disabled={busy === 'send' || busy === 'upload'}
+                />
               </label>
-              <button style={styles.primaryButton} onClick={handleSend}>
-                Gửi
+              <button style={styles.primaryButton} onClick={handleSend} disabled={busy === 'send' || busy === 'upload'}>
+                {busy === 'send' ? 'Đang gửi...' : 'Gửi'}
               </button>
             </div>
+            {error ? <p style={styles.error}>{error}</p> : null}
           </>
         ) : (
           <div style={styles.emptyState}>
@@ -209,6 +300,11 @@ const styles: Record<string, React.CSSProperties> = {
     color: '#6b7280',
     fontSize: 13,
     textAlign: 'left',
+  },
+  actionRow: {
+    display: 'flex',
+    gap: 12,
+    marginTop: 16,
   },
   sessionList: {
     display: 'flex',
@@ -313,6 +409,7 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 700,
     display: 'inline-flex',
     alignItems: 'center',
+    opacity: 1,
   },
   error: {
     color: '#dc2626',

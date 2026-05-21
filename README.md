@@ -86,4 +86,5 @@ See `docs/firebase-admin-setup.md` for setup details.
 - Firestore and Storage rules are now scoped by session owner or admin claim.
 - Mobile customers can only access their own session and messages.
 - Web admins should be granted `admin: true` through Firebase custom claims.
-- The current web UI still signs in with Google normally, but access control should rely on deployed Firebase rules.
+- The web UI now checks the admin claim after Google sign-in and blocks non-admin users.
+- Access control should still rely on deployed Firebase rules, not only UI behavior.

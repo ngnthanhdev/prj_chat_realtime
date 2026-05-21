@@ -29,6 +29,9 @@ await getAuth().setCustomUserClaims('FIREBASE_USER_UID', { admin: true });
 
 After setting the claim, the user should sign out and sign in again so the token refreshes.
 
+## Web UI behavior
+The web admin UI now checks the ID token after sign-in. If the signed-in user does not have `admin: true`, the UI will block access and ask the user to contact the project owner.
+
 ## Minimum Firebase configuration
 - Enable Google sign-in for web admins
 - Enable Anonymous sign-in for mobile customers
