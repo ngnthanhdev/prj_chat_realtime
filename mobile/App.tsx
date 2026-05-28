@@ -1,6 +1,7 @@
 import { StatusBar } from 'expo-status-bar';
 import * as ImagePicker from 'expo-image-picker';
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { Socket } from 'socket.io-client';
 import {
   ActivityIndicator,
   FlatList,
@@ -15,19 +16,18 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import { firebaseApp } from './lib/firebase';
-import { ensureAnonymousUser } from './lib/auth';
-import { createChatSession, sendImageMessage, sendTextMessage, subscribeMessages } from './lib/chat';
-import { ChatMessage } from './types';
 import { ChatMessageList } from './components/chat-message-list';
-
-void firebaseApp;
+import { createCustomerSession, listCustomerMessages, sendCustomerImageMessage, sendCustomerTextMessage } from './lib/api';
+import { connectCustomerRealtime, joinSession } from './lib/realtime';
+import { ChatMessage } from './types';
 
 export default function App() {
   const listRef = useRef<FlatList<ChatMessage>>(null);
+  const socketRef = useRef<Socket | null>(null);
   const [customerName, setCustomerName] = useState('');
   const [draft, setDraft] = useState('');
   const [sessionId, setSessionId] = useState<string | null>(null);
+  const [customerToken, setCustomerToken] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [loading, setLoading] = useState(false);
   const [sendingText, setSendingText] = useState(false);
@@ -37,9 +37,31 @@ export default function App() {
   const [ready, setReady] = useState(false);
 
   useEffect(() => {
-    if (!sessionId) return;
-    return subscribeMessages(sessionId, setMessages);
-  }, [sessionId]);
+    if (!sessionId || !customerToken) return;
+
+    void refreshMessages(sessionId, customerToken);
+
+    const socket = connectCustomerRealtime({
+      onMessageCreated: (message) => {
+        if (message.sessionId === sessionId) {
+          setMessages((prev) => (prev.some((item) => item.id === message.id) ? prev : [...prev, message]));
+        }
+      },
+      onSessionUpdated: (session) => {
+        if (session.id === sessionId && session.status === 'closed') {
+          setError('Session này đã được admin đóng.');
+        }
+      },
+    });
+
+    socketRef.current = socket;
+    joinSession(socket, sessionId);
+
+    return () => {
+      socket.disconnect();
+      socketRef.current = null;
+    };
+  }, [sessionId, customerToken]);
 
   useEffect(() => {
     if (!messages.length) return;
@@ -49,6 +71,16 @@ export default function App() {
   }, [messages]);
 
   const title = useMemo(() => (sessionId ? `Khách hàng: ${customerName}` : 'Bắt đầu cuộc trò chuyện'), [customerName, sessionId]);
+
+  const refreshMessages = async (nextSessionId: string, nextCustomerToken: string) => {
+    try {
+      const nextMessages = await listCustomerMessages(nextSessionId, nextCustomerToken);
+      setMessages(nextMessages);
+      setError(null);
+    } catch {
+      setError('Không tải được tin nhắn.');
+    }
+  };
 
   const handleStartChat = async () => {
     const trimmed = customerName.trim();
@@ -60,25 +92,26 @@ export default function App() {
     try {
       setLoading(true);
       setError(null);
-      const user = await ensureAnonymousUser();
-      const newSessionId = await createChatSession(trimmed, user.uid);
-      setSessionId(newSessionId);
+      const session = await createCustomerSession(trimmed);
+      setSessionId(session.sessionId);
+      setCustomerToken(session.customerToken);
       setReady(true);
     } catch {
-      setError('Không thể tạo phiên chat. Hãy kiểm tra Firebase config.');
+      setError('Không thể tạo phiên chat. Hãy kiểm tra backend.');
     } finally {
       setLoading(false);
     }
   };
 
   const handleSendMessage = async () => {
-    if (!sessionId || !draft.trim()) return;
+    if (!sessionId || !customerToken || !draft.trim()) return;
 
     try {
       setSendingText(true);
       setError(null);
-      await sendTextMessage(sessionId, draft);
+      await sendCustomerTextMessage(sessionId, customerToken, draft);
       setDraft('');
+      await refreshMessages(sessionId, customerToken);
     } catch {
       setError('Không gửi được tin nhắn.');
     } finally {
@@ -102,12 +135,14 @@ export default function App() {
   };
 
   const handleConfirmImage = async () => {
-    if (!sessionId || !previewImage) return;
+    if (!sessionId || !customerToken || !previewImage) return;
     try {
       setSendingImage(true);
       setError(null);
-      await sendImageMessage(sessionId, previewImage);
+      await sendCustomerImageMessage(sessionId, customerToken, previewImage, draft);
+      setDraft('');
       setPreviewImage(null);
+      await refreshMessages(sessionId, customerToken);
     } catch {
       setError('Không gửi được ảnh.');
     } finally {

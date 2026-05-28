@@ -1,0 +1,78 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum ChatSessionStatus {
+  open
+  closed
+}
+
+enum SenderType {
+  customer
+  admin
+}
+
+enum MessageType {
+  text
+  image
+}
+
+model Admin {
+  id            String              @id @default(uuid())
+  email         String              @unique
+  passwordHash  String
+  displayName   String
+  createdAt     DateTime            @default(now())
+  updatedAt     DateTime            @updatedAt
+  refreshTokens AdminRefreshToken[]
+  messages      Message[]
+}
+
+model AdminRefreshToken {
+  id         String   @id @default(uuid())
+  adminId    String
+  tokenHash  String
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  revokedAt  DateTime?
+  userAgent  String?
+  ipAddress  String?
+
+  admin Admin @relation(fields: [adminId], references: [id], onDelete: Cascade)
+
+  @@index([adminId])
+}
+
+model ChatSession {
+  id                String            @id @default(uuid())
+  customerName      String
+  customerTokenHash String
+  status            ChatSessionStatus @default(open)
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+  lastMessage       String?
+  lastMessageType   MessageType?
+  lastMessageAt     DateTime?
+  messages          Message[]
+}
+
+model Message {
+  id          String      @id @default(uuid())
+  sessionId   String
+  adminId     String?
+  senderType  SenderType
+  messageType MessageType
+  text        String?
+  imageUrl    String?
+  createdAt   DateTime    @default(now())
+
+  session ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  admin   Admin?      @relation(fields: [adminId], references: [id], onDelete: SetNull)
+
+  @@index([sessionId, createdAt])
+}

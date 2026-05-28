@@ -1,70 +1,110 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { onAuthStateChanged, User } from 'firebase/auth';
-import { auth, hasAdminClaim, signInAdmin, signOutAdmin } from '@/lib/auth';
-import { closeChatSession, sendAdminImageMessage, sendAdminTextMessage, subscribeMessages, subscribeSessions } from '@/lib/chat';
+import { ChangeEvent, CSSProperties, KeyboardEvent, useEffect, useMemo, useRef, useState } from 'react';
+import { Socket } from 'socket.io-client';
+import {
+  closeSession,
+  listMessages,
+  listSessions,
+  sendAdminImageMessage,
+  sendAdminTextMessage,
+} from '@/lib/api';
 import { ChatMessage, ChatSession } from '@/types';
-import { ChatSessionList } from '@/components/chat-session-list';
-import { ChatMessageList } from '@/components/chat-message-list';
+import { connectAdminRealtime, joinSession } from '@/lib/realtime';
+
+const avatarColors = ['#f59e0b', '#0ea5e9', '#8b5cf6', '#10b981', '#f43f5e', '#f97316', '#64748b'];
+
+function formatTimestamp(value?: string | null) {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  return new Intl.DateTimeFormat('vi-VN', {
+    hour: '2-digit',
+    minute: '2-digit',
+    day: '2-digit',
+    month: '2-digit',
+  }).format(date);
+}
+
+function initials(name: string) {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (!parts.length) return 'DM';
+  return parts.slice(0, 2).map((part) => part[0]?.toUpperCase()).join('');
+}
+
+function colorFor(value: string) {
+  let sum = 0;
+  for (const char of value) sum += char.charCodeAt(0);
+  return avatarColors[sum % avatarColors.length];
+}
 
 export default function HomePage() {
   const messageEndRef = useRef<HTMLDivElement | null>(null);
-  const [user, setUser] = useState<User | null>(null);
-  const [isAdmin, setIsAdmin] = useState(false);
-  const [checkingRole, setCheckingRole] = useState(true);
+  const socketRef = useRef<Socket | null>(null);
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [draft, setDraft] = useState('');
+  const [search, setSearch] = useState('');
   const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState<'login' | 'send' | 'upload' | 'close' | null>(null);
+  const [busy, setBusy] = useState<'send' | 'upload' | 'close' | null>(null);
   const [loadingSessions, setLoadingSessions] = useState(false);
+  const [loadingMessages, setLoadingMessages] = useState(false);
   const [previewFile, setPreviewFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
 
+  const activeSession = useMemo(
+    () => sessions.find((session) => session.id === activeSessionId) || null,
+    [activeSessionId, sessions],
+  );
+  const canSend = Boolean(activeSessionId && activeSession?.status !== 'closed' && (draft.trim() || previewFile));
+
+  const filteredSessions = useMemo(() => {
+    const query = search.trim().toLowerCase();
+    if (!query) return sessions;
+    return sessions.filter((session) =>
+      [session.customerName, session.lastMessage ?? '', session.status].some((value) => value.toLowerCase().includes(query)),
+    );
+  }, [search, sessions]);
+
   useEffect(() => {
-    return onAuthStateChanged(auth, async (nextUser) => {
-      setUser(nextUser);
-      setError(null);
+    void refreshSessions();
 
-      if (!nextUser) {
-        setIsAdmin(false);
-        setCheckingRole(false);
-        return;
-      }
-
-      setCheckingRole(true);
-      try {
-        const admin = await hasAdminClaim(nextUser);
-        setIsAdmin(admin);
-        if (!admin) setError('Tài khoản này chưa được cấp quyền admin.');
-      } catch {
-        setIsAdmin(false);
-        setError('Không kiểm tra được quyền admin.');
-      } finally {
-        setCheckingRole(false);
-      }
+    const socket = connectAdminRealtime({
+      onMessageCreated: (message) => {
+        if (message.sessionId === activeSessionId) {
+          setMessages((prev) => (prev.some((item) => item.id === message.id) ? prev : [...prev, message]));
+        }
+      },
+      onSessionUpdated: (session) => {
+        setSessions((prev) => {
+          const exists = prev.some((item) => item.id === session.id);
+          if (!exists) return prev;
+          return prev.map((item) => (item.id === session.id ? { ...item, ...session } : item));
+        });
+      },
+      onSessionCreated: (session) => {
+        setSessions((prev) => (prev.some((item) => item.id === session.id) ? prev : [session, ...prev]));
+      },
     });
-  }, []);
+
+    socketRef.current = socket;
+
+    return () => {
+      socket.disconnect();
+      socketRef.current = null;
+    };
+  }, [activeSessionId]);
 
   useEffect(() => {
-    if (!user || !isAdmin) return;
-    setLoadingSessions(true);
-    const unsubscribe = subscribeSessions((nextSessions) => {
-      setSessions(nextSessions);
-      setLoadingSessions(false);
-    });
-    return () => unsubscribe();
-  }, [user, isAdmin]);
-
-  useEffect(() => {
-    if (!activeSessionId || !isAdmin) {
+    if (!activeSessionId) {
       setMessages([]);
       return;
     }
-    return subscribeMessages(activeSessionId, setMessages);
-  }, [activeSessionId, isAdmin]);
+
+    if (socketRef.current) joinSession(socketRef.current, activeSessionId);
+    void refreshMessages(activeSessionId);
+  }, [activeSessionId]);
 
   useEffect(() => {
     messageEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -76,30 +116,47 @@ export default function HomePage() {
     };
   }, [previewUrl]);
 
-  const activeSession = useMemo(
-    () => sessions.find((session) => session.id === activeSessionId) || null,
-    [activeSessionId, sessions],
-  );
-
-  const handleLogin = async () => {
+  const refreshSessions = async () => {
     try {
-      setBusy('login');
+      setLoadingSessions(true);
+      const nextSessions = await listSessions();
+      setSessions(nextSessions);
       setError(null);
-      await signInAdmin();
+      if (!activeSessionId && nextSessions[0]) setActiveSessionId(nextSessions[0].id);
     } catch {
-      setError('Đăng nhập thất bại.');
+      setError('Không tải được danh sách direct message.');
     } finally {
-      setBusy(null);
+      setLoadingSessions(false);
+    }
+  };
+
+  const refreshMessages = async (sessionId: string) => {
+    try {
+      setLoadingMessages(true);
+      const nextMessages = await listMessages(sessionId);
+      setMessages(nextMessages);
+      setError(null);
+    } catch {
+      setError('Không tải được tin nhắn.');
+    } finally {
+      setLoadingMessages(false);
     }
   };
 
   const handleSend = async () => {
-    if (!activeSessionId || !draft.trim()) return;
+    if (!canSend || !activeSessionId) return;
     try {
-      setBusy('send');
+      setBusy(previewFile ? 'upload' : 'send');
       setError(null);
-      await sendAdminTextMessage(activeSessionId, draft);
+      if (previewFile) {
+        await sendAdminImageMessage(activeSessionId, previewFile, draft);
+        handleCancelPreview();
+      } else {
+        await sendAdminTextMessage(activeSessionId, draft);
+      }
       setDraft('');
+      await refreshMessages(activeSessionId);
+      await refreshSessions();
     } catch {
       setError('Không gửi được tin nhắn admin.');
     } finally {
@@ -107,29 +164,20 @@ export default function HomePage() {
     }
   };
 
-  const handleImageChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
+  const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault();
+      void handleSend();
+    }
+  };
+
+  const handleImageChange = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
-    if (!activeSessionId || !file) return;
+    if (!file) return;
     if (previewUrl) URL.revokeObjectURL(previewUrl);
     setPreviewFile(file);
     setPreviewUrl(URL.createObjectURL(file));
     event.target.value = '';
-  };
-
-  const handleSendPreviewImage = async () => {
-    if (!activeSessionId || !previewFile) return;
-    try {
-      setBusy('upload');
-      setError(null);
-      await sendAdminImageMessage(activeSessionId, previewFile);
-      if (previewUrl) URL.revokeObjectURL(previewUrl);
-      setPreviewFile(null);
-      setPreviewUrl(null);
-    } catch {
-      setError('Không gửi được ảnh admin.');
-    } finally {
-      setBusy(null);
-    }
   };
 
   const handleCancelPreview = () => {
@@ -143,7 +191,9 @@ export default function HomePage() {
     try {
       setBusy('close');
       setError(null);
-      await closeChatSession(activeSessionId);
+      await closeSession(activeSessionId);
+      await refreshSessions();
+      await refreshMessages(activeSessionId);
     } catch {
       setError('Không đóng được session.');
     } finally {
@@ -151,113 +201,170 @@ export default function HomePage() {
     }
   };
 
-  if (!user) {
-    return (
-      <main style={styles.centeredPage}>
-        <div style={styles.loginCard}>
-          <h1 style={styles.title}>Realtime Chat Admin</h1>
-          <p style={styles.muted}>Đăng nhập bằng Google để vào màn trả lời chat.</p>
-          <button style={styles.primaryButton} onClick={handleLogin} disabled={busy === 'login'}>
-            {busy === 'login' ? 'Đang đăng nhập...' : 'Đăng nhập với Google'}
-          </button>
-          {error ? <p style={styles.error}>{error}</p> : null}
-        </div>
-      </main>
-    );
-  }
-
-  if (checkingRole) {
-    return (
-      <main style={styles.centeredPage}>
-        <div style={styles.loginCard}>
-          <h1 style={styles.title}>Đang kiểm tra quyền</h1>
-          <p style={styles.muted}>Chờ một chút, mình đang kiểm tra admin claim.</p>
-        </div>
-      </main>
-    );
-  }
-
-  if (!isAdmin) {
-    return (
-      <main style={styles.centeredPage}>
-        <div style={styles.loginCard}>
-          <h1 style={styles.title}>Chưa có quyền admin</h1>
-          <p style={styles.muted}>Tài khoản này đã đăng nhập nhưng chưa được cấp claim `admin: true`.</p>
-          <div style={styles.actionRow}>
-            <button style={styles.secondaryButton} onClick={() => signOutAdmin()}>
-              Đăng xuất
-            </button>
-          </div>
-          {error ? <p style={styles.error}>{error}</p> : null}
-        </div>
-      </main>
-    );
-  }
-
   return (
-    <main style={styles.page}>
+    <main style={styles.shell}>
       <aside style={styles.sidebar}>
-        <div style={styles.sidebarHeader}>
+        <div style={styles.neighborhoodHeader}>
+          <div style={styles.neighborhoodIcon}>DM</div>
           <div>
-            <h1 style={styles.title}>Chats</h1>
-            <p style={styles.muted}>{user.email || 'Admin'}</p>
+            <div style={styles.neighborhoodName}>Realtime Support</div>
+            <div style={styles.activeLine}>
+              <span style={styles.onlineDot} />
+              <span>{sessions.filter((session) => session.status === 'open').length} direct messages open</span>
+            </div>
           </div>
-          <button style={styles.secondaryButton} onClick={() => signOutAdmin()}>
-            Đăng xuất
+        </div>
+
+        <div style={styles.searchWrap}>
+          <span style={styles.searchIcon}>⌕</span>
+          <input
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            placeholder="Search DMs..."
+            style={styles.searchInput}
+          />
+        </div>
+
+        <div style={styles.dmSectionHeader}>
+          <button type="button" style={styles.sectionToggle}>
+            <span>⌄</span>
+            <span>Direct Messages</span>
+          </button>
+          <button type="button" style={styles.iconButton} title="New direct message">
+            +
           </button>
         </div>
 
-        <ChatSessionList
-          sessions={sessions}
-          activeSessionId={activeSessionId}
-          loading={loadingSessions}
-          onSelect={setActiveSessionId}
-        />
+        <div style={styles.sessionList}>
+          {loadingSessions ? <p style={styles.sidebarMuted}>Đang tải direct messages...</p> : null}
+          {!loadingSessions && !filteredSessions.length ? (
+            <p style={styles.sidebarMuted}>Chưa có direct message nào.</p>
+          ) : null}
+          {filteredSessions.map((session) => {
+            const active = session.id === activeSessionId;
+            const init = initials(session.customerName);
+            return (
+              <button
+                key={session.id}
+                type="button"
+                onClick={() => setActiveSessionId(session.id)}
+                style={{
+                  ...styles.dmItem,
+                  ...(active ? styles.dmItemActive : null),
+                }}
+              >
+                <span style={styles.avatarShell}>
+                  <span style={{ ...styles.avatar, background: colorFor(session.customerName) }}>{init}</span>
+                  {session.status === 'open' ? <span style={styles.avatarOnline} /> : null}
+                </span>
+                <span style={styles.dmBody}>
+                  <span style={styles.dmTopLine}>
+                    <span style={{ ...styles.dmName, fontWeight: session.lastMessage ? 700 : 500 }}>{session.customerName}</span>
+                    <span style={styles.dmTime}>{formatTimestamp(session.lastMessageAt ?? session.updatedAt)}</span>
+                  </span>
+                  <span style={styles.dmPreview}>{session.lastMessage || 'Chưa có tin nhắn'}</span>
+                </span>
+              </button>
+            );
+          })}
+        </div>
+
+        <div style={styles.sidebarFooter}>
+          <span style={styles.adminAvatar}>AD</span>
+          <span style={styles.adminMeta}>
+            <span style={styles.adminName}>Admin</span>
+            <span style={styles.sidebarMuted}>Realtime dashboard</span>
+          </span>
+          <button type="button" style={styles.bellButton} title="Notifications">
+            ◦
+          </button>
+        </div>
       </aside>
 
       <section style={styles.chatPanel}>
         {activeSession ? (
           <>
-            <div style={styles.chatHeader}>
-              <div>
-                <h2 style={styles.subtitle}>{activeSession.customerName}</h2>
-                <p style={styles.muted}>Session: {activeSession.id}</p>
-                <p style={styles.muted}>Trạng thái: {activeSession.status}</p>
+            <header style={styles.chatHeader}>
+              <span style={{ ...styles.headerAvatar, background: colorFor(activeSession.customerName) }}>
+                {initials(activeSession.customerName)}
+              </span>
+              <span style={styles.headerText}>
+                <span style={styles.headerName}>{activeSession.customerName}</span>
+                <span style={{ ...styles.headerStatus, color: activeSession.status === 'open' ? '#10b981' : '#8c7b6e' }}>
+                  {activeSession.status === 'open' ? 'Active now' : 'Closed session'}
+                </span>
+              </span>
+              <span style={styles.headerActions}>
+                <button type="button" style={styles.headerIconButton} title="Call">
+                  ☎
+                </button>
+                <button type="button" style={styles.headerIconButton} title="Info">
+                  i
+                </button>
+                <button
+                  type="button"
+                  style={{ ...styles.closeButton, opacity: activeSession.status === 'closed' ? 0.6 : 1 }}
+                  onClick={handleCloseSession}
+                  disabled={busy === 'close' || activeSession.status === 'closed'}
+                  title="Close session"
+                >
+                  {busy === 'close' ? '...' : '×'}
+                </button>
+              </span>
+            </header>
+
+            <div style={styles.messagesPane}>
+              <div style={styles.dateDivider}>
+                <span style={styles.dividerLine} />
+                <span style={styles.dividerText}>Today</span>
+                <span style={styles.dividerLine} />
               </div>
-              <button style={styles.closeButton} onClick={handleCloseSession} disabled={busy === 'close' || activeSession.status === 'closed'}>
-                {busy === 'close' ? 'Đang đóng...' : activeSession.status === 'closed' ? 'Đã đóng' : 'Đóng session'}
-              </button>
+
+              {loadingMessages ? <p style={styles.emptyText}>Đang tải tin nhắn...</p> : null}
+              {!loadingMessages && !messages.length ? (
+                <div style={styles.emptyState}>
+                  <span style={{ ...styles.emptyAvatar, background: colorFor(activeSession.customerName) }}>
+                    {initials(activeSession.customerName)}
+                  </span>
+                  <h2 style={styles.emptyTitle}>{activeSession.customerName}</h2>
+                  <p style={styles.emptyText}>Bắt đầu trả lời direct message của khách hàng này.</p>
+                </div>
+              ) : null}
+
+              {messages.map((message, index) => {
+                const isMe = message.senderType === 'admin';
+                const previous = messages[index - 1];
+                const next = messages[index + 1];
+                const firstInGroup = previous?.senderType !== message.senderType;
+                const lastInGroup = next?.senderType !== message.senderType;
+                return (
+                  <MessageBubble
+                    key={message.id}
+                    message={message}
+                    isMe={isMe}
+                    firstInGroup={firstInGroup}
+                    lastInGroup={lastInGroup}
+                    customerName={activeSession.customerName}
+                  />
+                );
+              })}
+              <div ref={messageEndRef} />
             </div>
 
-            <ChatMessageList messages={messages} customerName={activeSession.customerName} endRef={messageEndRef} />
-
             {previewUrl ? (
-              <div style={styles.previewPanel}>
-                <div>
-                  <div style={styles.previewTitle}>Ảnh sắp gửi</div>
-                  <img src={previewUrl} alt="preview" style={styles.previewImage as React.CSSProperties} />
-                </div>
-                <div style={styles.previewActions}>
-                  <button style={styles.secondaryButton} onClick={handleCancelPreview} disabled={busy === 'upload'}>
-                    Hủy
-                  </button>
-                  <button style={styles.primaryButton} onClick={handleSendPreviewImage} disabled={busy === 'upload'}>
-                    {busy === 'upload' ? 'Đang tải ảnh...' : 'Gửi ảnh'}
+              <div style={styles.previewStrip}>
+                <div style={styles.previewCard}>
+                  <img src={previewUrl} alt="preview" style={styles.previewImage} />
+                  <button type="button" style={styles.previewClose} onClick={handleCancelPreview} title="Cancel image">
+                    ×
                   </button>
                 </div>
               </div>
             ) : null}
 
-            <div style={styles.composer}>
-              <input
-                value={draft}
-                onChange={(event) => setDraft(event.target.value)}
-                placeholder="Nhập tin nhắn trả lời"
-                style={styles.input}
-                disabled={busy === 'send' || busy === 'upload' || activeSession.status === 'closed'}
-              />
-              <label style={styles.fileButton}>
-                Chọn ảnh
+            <div style={styles.composerArea}>
+              <label style={styles.imageButton} title="Send image">
+                +
                 <input
                   type="file"
                   accept="image/*"
@@ -266,17 +373,41 @@ export default function HomePage() {
                   disabled={busy === 'send' || busy === 'upload' || activeSession.status === 'closed'}
                 />
               </label>
-              <button style={styles.primaryButton} onClick={handleSend} disabled={busy === 'send' || busy === 'upload' || activeSession.status === 'closed'}>
-                {busy === 'send' ? 'Đang gửi...' : 'Gửi'}
+              <div style={styles.textPill}>
+                <textarea
+                  value={draft}
+                  onChange={(event) => setDraft(event.target.value)}
+                  onKeyDown={handleKeyDown}
+                  placeholder={activeSession.status === 'closed' ? 'Session này đã đóng' : 'Aa'}
+                  rows={1}
+                  style={styles.textarea}
+                  disabled={busy === 'send' || busy === 'upload' || activeSession.status === 'closed'}
+                />
+                <button type="button" style={styles.emojiButton} title="Emoji">
+                  ☺
+                </button>
+              </div>
+              <button
+                type="button"
+                style={{
+                  ...styles.sendButton,
+                  ...(!canSend ? styles.sendButtonDisabled : null),
+                }}
+                onClick={handleSend}
+                disabled={busy === 'send' || busy === 'upload' || !canSend}
+                title="Send"
+              >
+                {busy === 'send' || busy === 'upload' ? '…' : '➤'}
               </button>
             </div>
-            {activeSession.status === 'closed' ? <p style={styles.muted}>Session này đã đóng, chỉ còn xem lịch sử.</p> : null}
+
             {error ? <p style={styles.error}>{error}</p> : null}
           </>
         ) : (
-          <div style={styles.emptyState}>
-            <h2 style={styles.subtitle}>Chọn một cuộc chat</h2>
-            <p style={styles.muted}>Danh sách bên trái sẽ hiện các khách hàng đang nhắn.</p>
+          <div style={styles.noConversation}>
+            <span style={styles.noConversationIcon}>DM</span>
+            <h1 style={styles.emptyTitle}>Chọn một direct message</h1>
+            <p style={styles.emptyText}>Danh sách bên trái chỉ hiển thị direct messages, không có channel.</p>
           </div>
         )}
       </section>
@@ -284,153 +415,593 @@ export default function HomePage() {
   );
 }
 
-const styles: Record<string, React.CSSProperties> = {
-  page: {
-    display: 'grid',
-    gridTemplateColumns: '320px 1fr',
-    minHeight: '100vh',
+function MessageBubble({
+  message,
+  isMe,
+  firstInGroup,
+  lastInGroup,
+  customerName,
+}: {
+  message: ChatMessage;
+  isMe: boolean;
+  firstInGroup: boolean;
+  lastInGroup: boolean;
+  customerName: string;
+}) {
+  return (
+    <div style={{ ...styles.messageRow, justifyContent: isMe ? 'flex-end' : 'flex-start' }}>
+      {!isMe && lastInGroup ? (
+        <span style={{ ...styles.messageAvatar, background: colorFor(customerName) }}>{initials(customerName)}</span>
+      ) : (
+        !isMe && <span style={styles.messageAvatarSpacer} />
+      )}
+      <div style={{ ...styles.messageCluster, alignItems: isMe ? 'flex-end' : 'flex-start' }}>
+        {firstInGroup ? <span style={styles.messageAuthor}>{isMe ? 'You' : customerName}</span> : null}
+        <div
+          style={{
+            ...styles.bubble,
+            ...(isMe ? styles.myBubble : styles.theirBubble),
+            borderBottomRightRadius: isMe && !lastInGroup ? 8 : 22,
+            borderBottomLeftRadius: !isMe && !lastInGroup ? 8 : 22,
+          }}
+        >
+          {message.messageType === 'image' && message.imageUrl ? (
+            <>
+              <img src={message.imageUrl} alt="chat image" style={styles.chatImage} />
+              {message.text ? <span style={styles.imageCaption}>{message.text}</span> : null}
+            </>
+          ) : (
+            <span>{message.text || ''}</span>
+          )}
+        </div>
+        {lastInGroup ? <span style={styles.messageTime}>{formatTimestamp(message.createdAt)}</span> : null}
+      </div>
+    </div>
+  );
+}
+
+const styles: Record<string, CSSProperties> = {
+  shell: {
+    display: 'flex',
+    height: '100vh',
+    width: '100vw',
+    overflow: 'hidden',
+    background: '#faf8f5',
+    color: '#2c1a0e',
+    fontFamily: "'Plus Jakarta Sans', Inter, system-ui, sans-serif",
   },
-  centeredPage: {
-    minHeight: '100vh',
+  sidebar: {
+    width: 280,
+    height: '100%',
+    flexShrink: 0,
+    background: '#2c1a0e',
+    color: '#faf8f5',
+    display: 'flex',
+    flexDirection: 'column',
+  },
+  neighborhoodHeader: {
+    display: 'flex',
+    gap: 10,
+    alignItems: 'center',
+    padding: '16px 16px 14px',
+    borderBottom: '1px solid rgba(250,248,245,0.1)',
+  },
+  neighborhoodIcon: {
+    width: 34,
+    height: 34,
+    borderRadius: 10,
+    background: '#c8561e',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
-    padding: 24,
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: 800,
   },
-  loginCard: {
-    width: '100%',
-    maxWidth: 420,
-    background: '#fff',
-    borderRadius: 20,
-    padding: 24,
-    boxShadow: '0 10px 30px rgba(0,0,0,0.08)',
+  neighborhoodName: {
+    fontSize: 15,
+    fontWeight: 800,
+    lineHeight: 1.2,
   },
-  sidebar: {
-    borderRight: '1px solid #e5e7eb',
-    background: '#fff',
-    padding: 20,
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 16,
-  },
-  sidebarHeader: {
+  activeLine: {
     display: 'flex',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 12,
+    gap: 6,
+    marginTop: 3,
+    color: 'rgba(250,248,245,0.62)',
+    fontSize: 12,
   },
-  title: {
-    margin: 0,
-    fontSize: 28,
+  onlineDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 999,
+    background: '#34d399',
   },
-  subtitle: {
-    margin: 0,
+  searchWrap: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+    margin: '12px 12px 8px',
+    padding: '8px 11px',
+    borderRadius: 10,
+    background: 'rgba(255,255,255,0.08)',
+  },
+  searchIcon: {
+    color: 'rgba(250,248,245,0.48)',
+    fontSize: 17,
+  },
+  searchInput: {
+    flex: 1,
+    minWidth: 0,
+    border: 0,
+    outline: 'none',
+    background: 'transparent',
+    color: 'rgba(250,248,245,0.78)',
+    fontSize: 13,
+  },
+  dmSectionHeader: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 6,
+    padding: '2px 10px 4px',
+  },
+  sectionToggle: {
+    border: 0,
+    background: 'transparent',
+    color: 'rgba(250,248,245,0.52)',
+    textTransform: 'uppercase',
+    letterSpacing: '0.06em',
+    fontSize: 11,
+    fontWeight: 800,
+    display: 'flex',
+    alignItems: 'center',
+    gap: 4,
+    flex: 1,
+    padding: '6px 2px',
+  },
+  iconButton: {
+    width: 24,
+    height: 24,
+    border: 0,
+    borderRadius: 8,
+    background: 'transparent',
+    color: 'rgba(250,248,245,0.48)',
+    cursor: 'pointer',
+    fontSize: 17,
+  },
+  sessionList: {
+    flex: 1,
+    overflowY: 'auto',
+    padding: '0 8px 12px',
+    scrollbarWidth: 'none',
+  },
+  sidebarMuted: {
+    color: 'rgba(250,248,245,0.46)',
+    fontSize: 12,
+    margin: '8px 8px',
+  },
+  dmItem: {
+    width: '100%',
+    border: 0,
+    borderLeftWidth: 2,
+    borderLeftStyle: 'solid',
+    borderLeftColor: 'transparent',
+    borderRadius: 10,
+    background: 'transparent',
+    display: 'flex',
+    alignItems: 'center',
+    gap: 9,
+    padding: '8px 8px',
+    color: '#faf8f5',
+    textAlign: 'left',
+    cursor: 'pointer',
+  },
+  dmItemActive: {
+    background: 'rgba(200,86,30,0.25)',
+    borderLeftColor: '#c8561e',
+  },
+  avatarShell: {
+    position: 'relative',
+    flexShrink: 0,
+  },
+  avatar: {
+    width: 32,
+    height: 32,
+    borderRadius: 999,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    fontSize: 11,
+    fontWeight: 800,
+    color: '#fff',
+  },
+  avatarOnline: {
+    position: 'absolute',
+    right: -1,
+    bottom: -1,
+    width: 10,
+    height: 10,
+    borderRadius: 999,
+    background: '#34d399',
+    border: '2px solid #2c1a0e',
+  },
+  dmBody: {
+    minWidth: 0,
+    flex: 1,
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 2,
+  },
+  dmTopLine: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+  },
+  dmName: {
+    flex: 1,
+    minWidth: 0,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+    color: 'rgba(250,248,245,0.82)',
+    fontSize: 13,
+  },
+  dmTime: {
+    color: 'rgba(250,248,245,0.38)',
+    fontSize: 10,
+    flexShrink: 0,
+  },
+  dmPreview: {
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+    color: 'rgba(250,248,245,0.46)',
+    fontSize: 11,
+  },
+  sidebarFooter: {
+    borderTop: '1px solid rgba(250,248,245,0.1)',
+    display: 'flex',
+    alignItems: 'center',
+    gap: 10,
+    padding: 12,
+  },
+  adminAvatar: {
+    width: 32,
+    height: 32,
+    borderRadius: 999,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    background: '#c8561e',
+    fontSize: 12,
+    fontWeight: 800,
+    color: '#fff',
+  },
+  adminMeta: {
+    flex: 1,
+    minWidth: 0,
+    display: 'flex',
+    flexDirection: 'column',
+  },
+  adminName: {
+    color: '#faf8f5',
+    fontSize: 13,
+    fontWeight: 700,
+  },
+  bellButton: {
+    width: 28,
+    height: 28,
+    border: 0,
+    borderRadius: 999,
+    background: 'transparent',
+    color: 'rgba(250,248,245,0.5)',
     fontSize: 22,
   },
-  muted: {
-    color: '#6b7280',
-  },
-  actionRow: {
-    display: 'flex',
-    gap: 12,
-    marginTop: 16,
-  },
   chatPanel: {
-    padding: 24,
+    flex: 1,
+    minWidth: 0,
     display: 'flex',
     flexDirection: 'column',
-    gap: 16,
+    height: '100%',
+    background: '#faf8f5',
   },
   chatHeader: {
-    background: '#fff',
-    borderRadius: 16,
-    padding: 20,
     display: 'flex',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 16,
-  },
-  composer: {
-    display: 'flex',
     gap: 12,
+    padding: '12px 18px',
     background: '#fff',
-    borderRadius: 16,
-    padding: 16,
+    borderBottom: '1px solid rgba(44,26,14,0.1)',
   },
-  input: {
-    flex: 1,
-    border: '1px solid #d1d5db',
-    borderRadius: 12,
-    padding: '12px 14px',
-  },
-  primaryButton: {
-    border: 'none',
-    borderRadius: 12,
-    background: '#4f46e5',
+  headerAvatar: {
+    width: 40,
+    height: 40,
+    borderRadius: 999,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
     color: '#fff',
-    padding: '12px 16px',
-    cursor: 'pointer',
+    fontSize: 13,
+    fontWeight: 800,
+  },
+  headerText: {
+    flex: 1,
+    minWidth: 0,
+    display: 'flex',
+    flexDirection: 'column',
+  },
+  headerName: {
+    color: '#2c1a0e',
+    fontSize: 15,
+    fontWeight: 800,
+  },
+  headerStatus: {
+    fontSize: 12,
     fontWeight: 700,
   },
-  secondaryButton: {
-    border: '1px solid #d1d5db',
-    borderRadius: 12,
-    background: '#fff',
-    padding: '10px 12px',
+  headerActions: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 6,
+  },
+  headerIconButton: {
+    width: 36,
+    height: 36,
+    border: 0,
+    borderRadius: 999,
+    background: 'transparent',
+    color: '#c8561e',
     cursor: 'pointer',
+    fontSize: 17,
   },
   closeButton: {
-    border: 'none',
-    borderRadius: 12,
-    background: '#b91c1c',
-    color: '#fff',
-    padding: '12px 16px',
+    width: 36,
+    height: 36,
+    border: 0,
+    borderRadius: 999,
+    background: 'rgba(200,86,30,0.12)',
+    color: '#c8561e',
     cursor: 'pointer',
-    fontWeight: 700,
+    fontSize: 20,
   },
-  fileButton: {
-    borderRadius: 12,
-    background: '#0f766e',
-    color: '#fff',
-    padding: '12px 16px',
-    cursor: 'pointer',
-    fontWeight: 700,
-    display: 'inline-flex',
-    alignItems: 'center',
+  messagesPane: {
+    flex: 1,
+    overflowY: 'auto',
+    padding: '14px 18px 18px',
+    scrollbarWidth: 'none',
   },
-  previewPanel: {
-    background: '#fff',
-    borderRadius: 16,
-    padding: 16,
+  dateDivider: {
     display: 'flex',
-    gap: 16,
     alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  previewTitle: {
-    fontWeight: 700,
-    marginBottom: 8,
-  },
-  previewImage: {
-    width: 160,
-    height: 160,
-    objectFit: 'cover',
-    borderRadius: 12,
-  },
-  previewActions: {
-    display: 'flex',
     gap: 12,
-    alignItems: 'center',
+    margin: '12px 0 18px',
   },
-  error: {
-    color: '#dc2626',
-    marginTop: 12,
+  dividerLine: {
+    flex: 1,
+    height: 1,
+    background: 'rgba(44,26,14,0.1)',
+  },
+  dividerText: {
+    color: '#8c7b6e',
+    fontSize: 11,
+    fontWeight: 800,
   },
   emptyState: {
+    minHeight: 260,
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  emptyAvatar: {
+    width: 64,
+    height: 64,
+    borderRadius: 999,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    color: '#fff',
+    fontWeight: 800,
+  },
+  emptyTitle: {
+    margin: 0,
+    color: '#2c1a0e',
+    fontSize: 19,
+    fontWeight: 800,
+  },
+  emptyText: {
+    color: '#8c7b6e',
+    fontSize: 14,
+    margin: 0,
+  },
+  messageRow: {
+    display: 'flex',
+    gap: 8,
+    marginTop: 3,
+  },
+  messageAvatar: {
+    width: 28,
+    height: 28,
+    borderRadius: 999,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    color: '#fff',
+    fontSize: 10,
+    fontWeight: 800,
+    alignSelf: 'flex-end',
+  },
+  messageAvatarSpacer: {
+    width: 28,
+    flexShrink: 0,
+  },
+  messageCluster: {
+    maxWidth: 'min(70%, 720px)',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 3,
+  },
+  messageAuthor: {
+    color: '#8c7b6e',
+    fontSize: 11,
+    fontWeight: 700,
+    padding: '0 10px',
+  },
+  bubble: {
+    borderRadius: 22,
+    padding: '9px 13px',
+    fontSize: 14,
+    lineHeight: 1.45,
+    overflowWrap: 'anywhere',
+  },
+  myBubble: {
+    background: '#c8561e',
+    color: '#fff',
+  },
+  theirBubble: {
+    background: '#fff',
+    color: '#2c1a0e',
+    boxShadow: '0 1px 2px rgba(44,26,14,0.06)',
+  },
+  chatImage: {
+    display: 'block',
+    width: 220,
+    height: 220,
+    objectFit: 'cover',
+    borderRadius: 16,
+  },
+  imageCaption: {
+    display: 'block',
+    marginTop: 8,
+    whiteSpace: 'pre-wrap',
+  },
+  messageTime: {
+    color: '#8c7b6e',
+    fontSize: 10,
+    padding: '0 10px 5px',
+  },
+  previewStrip: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    padding: '10px 18px 0',
+  },
+  previewCard: {
+    position: 'relative',
+    display: 'inline-block',
+  },
+  previewImage: {
+    width: 112,
+    height: 90,
+    borderRadius: 16,
+    objectFit: 'cover',
+    border: '1px solid rgba(44,26,14,0.1)',
+  },
+  previewClose: {
+    position: 'absolute',
+    top: -8,
+    right: -8,
+    width: 22,
+    height: 22,
+    border: 0,
+    borderRadius: 999,
+    background: '#ef4444',
+    color: '#fff',
+    cursor: 'pointer',
+  },
+  composerArea: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 10,
+    padding: '12px 18px 18px',
+  },
+  imageButton: {
+    width: 38,
+    height: 38,
+    flexShrink: 0,
+    borderRadius: 999,
+    border: 0,
+    background: 'rgba(200,86,30,0.12)',
+    color: '#c8561e',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    cursor: 'pointer',
+    fontSize: 24,
+    fontWeight: 500,
+  },
+  textPill: {
+    flex: 1,
+    minWidth: 0,
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+    minHeight: 42,
+    padding: '8px 12px 8px 16px',
+    borderRadius: 999,
+    border: '1px solid rgba(44,26,14,0.1)',
+    background: '#fff',
+  },
+  textarea: {
+    flex: 1,
+    minWidth: 0,
+    resize: 'none',
+    outline: 'none',
+    border: 0,
+    background: 'transparent',
+    color: '#2c1a0e',
+    font: 'inherit',
+    fontSize: 14,
+    lineHeight: '22px',
+    maxHeight: 88,
+  },
+  emojiButton: {
+    border: 0,
+    background: 'transparent',
+    color: '#8c7b6e',
+    cursor: 'pointer',
+    fontSize: 18,
+  },
+  sendButton: {
+    width: 38,
+    height: 38,
+    border: 0,
+    borderRadius: 999,
+    background: '#c8561e',
+    color: '#fff',
+    cursor: 'pointer',
+    fontSize: 16,
+  },
+  sendButtonDisabled: {
+    background: '#ede8e1',
+    color: '#8c7b6e',
+    cursor: 'not-allowed',
+  },
+  error: {
+    color: '#b91c1c',
+    margin: '0 18px 12px',
+    fontSize: 13,
+  },
+  noConversation: {
     height: '100%',
     display: 'flex',
     flexDirection: 'column',
     alignItems: 'center',
     justifyContent: 'center',
+    gap: 10,
+  },
+  noConversationIcon: {
+    width: 64,
+    height: 64,
+    borderRadius: 18,
+    background: '#c8561e',
+    color: '#fff',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    fontSize: 18,
+    fontWeight: 900,
   },
 };

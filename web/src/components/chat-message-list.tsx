@@ -1,8 +1,9 @@
 import { ChatMessage } from '@/types';
 
-function formatTimestamp(value: unknown) {
-  if (!value || typeof value !== 'object' || !('toDate' in (value as Record<string, unknown>))) return '';
-  const date = (value as { toDate: () => Date }).toDate();
+function formatTimestamp(value?: string) {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
   return new Intl.DateTimeFormat('vi-VN', {
     hour: '2-digit',
     minute: '2-digit',
@@ -52,7 +53,10 @@ export function ChatMessageList({
               {message.senderType === 'admin' ? 'Admin' : customerName}
             </div>
             {message.messageType === 'image' && message.imageUrl ? (
-              <img src={message.imageUrl} alt="chat image" style={{ width: 220, height: 220, objectFit: 'cover', borderRadius: 12 }} />
+              <>
+                <img src={message.imageUrl} alt="chat image" style={{ width: 220, height: 220, objectFit: 'cover', borderRadius: 12 }} />
+                {message.text ? <div style={{ marginTop: 8, whiteSpace: 'pre-wrap' }}>{message.text}</div> : null}
+              </>
             ) : (
               <div>{message.text || ''}</div>
             )}

@@ -1,9 +1,10 @@
 import { FlatList, Image, Text, View } from 'react-native';
 import { ChatMessage } from '../types';
 
-function formatTimestamp(value: unknown) {
-  if (!value || typeof value !== 'object' || !('toDate' in (value as Record<string, unknown>))) return '';
-  const date = (value as { toDate: () => Date }).toDate();
+function formatTimestamp(value?: string) {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
   return new Intl.DateTimeFormat('vi-VN', {
     hour: '2-digit',
     minute: '2-digit',
@@ -43,7 +44,7 @@ export function ChatMessageList({
           {item.messageType === 'image' && item.imageUrl ? (
             <>
               <Image source={{ uri: item.imageUrl }} style={{ width: 180, height: 180, borderRadius: 12 }} />
-              <Text style={{ marginTop: 6, fontSize: 12, color: '#6b7280' }}>Ảnh</Text>
+              {item.text ? <Text style={{ marginTop: 6, color: '#111827' }}>{item.text}</Text> : null}
             </>
           ) : (
             <Text style={{ color: '#111827' }}>{item.text || ''}</Text>

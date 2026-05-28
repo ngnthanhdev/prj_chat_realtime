@@ -2,25 +2,25 @@
 
 MVP realtime chat between customer mobile app and admin web app.
 
-## Features in current MVP
+## Features in current migration target
 - Customer enters name on mobile before chatting
 - Each mobile entry creates a new chat session
-- Customer sends text and images in realtime
-- Admin signs in on web with Google
-- Admin sees session list and replies in realtime
-- Images are uploaded through Firebase Storage
+- Customer and admin exchange messages in realtime
+- Admin signs in on web with backend-owned credentials
+- Backend owns auth, database, websocket delivery, and upload flow
 
 ## Stack
 - Web: Next.js
 - Mobile: Expo React Native
-- Backend: Firebase Firestore, Storage, Auth
+- Backend: NestJS + Postgres + Prisma + Socket.IO
 
 ## Structure
 - `web/`: admin web app
 - `mobile/`: customer mobile app
+- `backend/`: NestJS API and websocket server
 - `docs/specs/`: working specs updated during implementation
-- `firestore.rules`: Firestore security rules starter
-- `storage.rules`: Firebase Storage security rules starter
+- `firestore.rules`: legacy Firebase rules, pending cleanup
+- `storage.rules`: legacy Firebase rules, pending cleanup
 
 ## Setup
 
@@ -29,17 +29,14 @@ MVP realtime chat between customer mobile app and admin web app.
 npm install
 ```
 
-### 2. Configure Firebase
-Create these files from the examples:
-- `web/.env.local`
-- `mobile/.env.example` -> copy values into Expo env handling as needed
+### 2. Backend setup
+See `backend/README.md`.
 
-### 3. Required Firebase services
-- Authentication
-  - enable Google provider for admin web
-  - enable Anonymous provider for mobile customers
-- Firestore Database
-- Firebase Storage
+### 3. Current app status
+- `backend/` is the new source of truth for auth and chat data.
+- `web/` and `mobile/` now point at the new backend for phase-1 text chat flows.
+- image upload is now wired through backend local-disk endpoints for both web and mobile.
+- Firebase docs and rule files remain temporarily for reference until final cleanup is complete.
 
 ### 4. Run apps
 ```bash
@@ -47,47 +44,32 @@ npm run dev:web
 npm run dev:mobile
 ```
 
+Run backend separately from `backend/` once env and Postgres are ready.
+
 ## Environment variables
+Backend env now lives in:
+- `backend/.env`
 
-### Web
-Use `web/.env.local`
+See:
+- `backend/.env.example`
+- `docs/backend-local-setup.md`
 
-```bash
-NEXT_PUBLIC_FIREBASE_API_KEY=
-NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN=
-NEXT_PUBLIC_FIREBASE_PROJECT_ID=
-NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET=
-NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID=
-NEXT_PUBLIC_FIREBASE_APP_ID=
-```
+Included backend local-dev support now has:
+- `backend/.env`
+- `backend/docker-compose.yml`
+- `backend/scripts/dev-setup.sh`
 
-### Mobile
-Use Expo public envs
-
-```bash
-EXPO_PUBLIC_FIREBASE_API_KEY=
-EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN=
-EXPO_PUBLIC_FIREBASE_PROJECT_ID=
-EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET=
-EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID=
-EXPO_PUBLIC_FIREBASE_APP_ID=
-```
-
-## Security setup
-This version now expects real admin accounts to have a Firebase custom claim:
-
-```json
-{ "admin": true }
-```
-
-See `docs/firebase-admin-setup.md` for setup details.
+Main backend envs include:
+- `DATABASE_URL`
+- JWT secrets and expiry config
+- cookie names
+- app origin/base URL
+- upload directory
+- bootstrap admin credentials
 
 ## Notes
-- Firestore and Storage rules are now scoped by session owner or admin claim.
-- Mobile customers can only access their own session and messages.
-- Web admins should be granted `admin: true` through Firebase custom claims.
-- The web UI now checks the admin claim after Google sign-in and blocks non-admin users.
-- UX polish added: auto-scroll, message timestamps on web and mobile, and image preview before sending.
-- Env config is now validated at startup for both web and mobile Firebase clients.
-- Admin can close a session from the web UI.
-- Access control should still rely on deployed Firebase rules, not only UI behavior.
+- NestJS + Postgres migration spec: `docs/specs/2026-05-22-nestjs-postgres-chat-design.md`
+- Backend phase 1 now covers admin auth, guest customer session creation, text messaging APIs, and websocket scaffolding.
+- Web and mobile now use backend HTTP APIs plus Socket.IO session events for realtime updates.
+- Backend image upload now targets local disk storage under `backend/uploads/`.
+- Firebase client dependencies have been removed from active app flows and only legacy cleanup remains.

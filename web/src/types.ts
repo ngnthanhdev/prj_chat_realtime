@@ -1,20 +1,27 @@
 export type ChatSession = {
   id: string;
   customerName: string;
-  customerUid: string;
   status: 'open' | 'closed';
-  createdAt?: unknown;
-  updatedAt?: unknown;
-  lastMessage?: string;
-  lastMessageType?: 'text' | 'image';
-  lastMessageAt?: unknown;
+  createdAt?: string;
+  updatedAt?: string;
+  lastMessage?: string | null;
+  lastMessageType?: 'text' | 'image' | null;
+  lastMessageAt?: string | null;
 };
 
 export type ChatMessage = {
   id: string;
+  sessionId?: string;
   senderType: 'customer' | 'admin';
   messageType: 'text' | 'image';
-  text?: string;
-  imageUrl?: string;
-  createdAt?: unknown;
+  text?: string | null;
+  imageUrl?: string | null;
+  createdAt?: string;
+};
+
+export type AdminProfile = {
+  id: string;
+  email: string;
+  displayName: string;
+  createdAt?: string;
 };
